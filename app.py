@@ -1,16 +1,19 @@
 import cv2
+import math
 import numpy as np
 from tensorflow.keras.models import load_model
+from cvzone.HandTrackingModule import HandDetector
+from cvzone.ClassificationModule import Classifier
 from flask import Flask, render_template, Response
 
 app = Flask(__name__)
-model = load_model('./modal/ASL.h5')
+offset = 20
+imgSize = 300
 labels = [
 "A",
 "B",
 "C",    
 "D",
-"del",
 "E",
 "F",
 "G",
@@ -21,13 +24,11 @@ labels = [
 "L",
 "M",
 "N",
-"nothing",
 "O",
 "P",
 "Q",
 "R",
 "S",
-"space",
 "T",
 "U",
 "V",
@@ -36,6 +37,8 @@ labels = [
 "Y",
 "Z",
 ]
+detector = HandDetector(maxHands=1)
+classifier = Classifier("model.h5", "labels.txt")
 
 
 def generate_frames():
@@ -45,25 +48,43 @@ def generate_frames():
         if not success:
             break
 
-        # Resize the frame to the input shape of the model (64x64x3)
-        resized = cv2.resize(frame, (224, 224))
-        
-        # Normalize the pixel values
-        normalized = resized / 255.0
-        
-        # Reshape the image to (1, 64, 64, 3) to match the input shape of the model
-        reshaped = normalized.reshape((1, 224, 224, 3))
-        
-        # Pass the image through the model and get the predicted class probabilities
-        probs = model.predict(reshaped)[0]
-        
-        # Get the class label with the highest probability
-        label = labels[np.argmax(probs)]
-        
-        # Display the label on the frame
-        cv2.putText(frame, label, (50, 150), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
+        hands, img = detector.findHands(frame)
+        imgOutput = img.copy()
 
-        rear, buffer = cv2.imencode('.jpg', frame)
+        if len(hands) > 0 and hands[0].get('bbox') is not None:
+            hand = hands[0]
+            x, y, w, h = hand['bbox']
+
+            imgWhite = np.ones((imgSize, imgSize, 3), np.uint8) * 255
+            imgCrop = img[y - offset:y + h + offset, x - offset:x + w + offset]
+            if len(imgCrop) > 0:
+                aspectRatio = h / w
+
+                if aspectRatio > 1:
+                    k = imgSize / h
+                    wCal = math.ceil(k * w)
+                    imgResize = cv2.resize(imgCrop, (wCal, imgSize))    
+                    wGap = math.ceil((imgSize - wCal) / 2)
+                    imgWhite[:, wGap:wCal + wGap] = imgResize
+                    prediction, index = classifier.getPrediction(imgWhite, draw=False)
+                    print(prediction, index)
+
+                else:
+                    k = imgSize / w
+                    hCal = math.ceil(k * h)
+                    imgResize = cv2.resize(imgCrop, (imgSize, hCal))
+                    hGap = math.ceil((imgSize - hCal) / 2)
+                    imgWhite[hGap:hCal + hGap, :] = imgResize
+                    prediction, index = classifier.getPrediction(imgWhite, draw=False)
+                    print(prediction, index)
+
+                cv2.rectangle(imgOutput, (x - offset, y - offset-50),
+                            (x - offset+90, y - offset-50+50), (255, 0, 255), cv2.FILLED)
+                cv2.putText(imgOutput, labels[index], (x, y -26), cv2.FONT_HERSHEY_COMPLEX, 1.7, (255, 255, 255), 2)
+                cv2.rectangle(imgOutput, (x-offset, y-offset),
+                            (x + w+offset, y + h+offset), (255, 0, 255), 4)
+
+        rear, buffer = cv2.imencode('.jpg', imgOutput)
         frame = buffer.tobytes()
 
         yield (b'--frame\r\n'b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
